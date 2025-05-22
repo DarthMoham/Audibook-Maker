@@ -5,18 +5,16 @@ import { IncomingForm, type File as FormidableFile } from 'formidable';
 import fs from 'fs-extra';
 import path from 'path';
 import tmp from 'tmp';
-import { Readable } from 'stream'; // For Readable.fromWeb and Node.js stream operations
-// import { ReadableStream as WebReadableStream } from 'stream/web'; // For type hint if needed, Readable.toWeb provides instance
+import { Readable } from 'stream'; 
 
 import { convertToM4B, type ChapterInput, type AudiobookMetadata } from '@/services/audio-processor';
 
 export const config = {
   api: {
-    bodyParser: false, // Important: prevent Next.js from parsing the body
+    bodyParser: false, 
   },
 };
 
-// Helper to get the first field value if it's an array (Formidable can return arrays)
 const getFirstField = (fieldValue: string | string[] | undefined): string | undefined => {
   if (Array.isArray(fieldValue)) {
     return fieldValue[0];
@@ -25,8 +23,8 @@ const getFirstField = (fieldValue: string | string[] | undefined): string | unde
 };
 
 export async function POST(req: NextRequest) {
-  let tempUploadDirPath: string | null = null; // For Formidable uploads
-  let m4bOutputContainingDir: string | null = null; // For the directory holding the final M4B
+  let tempUploadDirPath: string | null = null; 
+  let m4bOutputContainingDir: string | null = null; 
 
   try {
     const tempDirObject = tmp.dirSync({ unsafeCleanup: true });
@@ -36,9 +34,9 @@ export async function POST(req: NextRequest) {
     const form = new IncomingForm({
       uploadDir: tempUploadDirPath,
       keepExtensions: true,
-      multiples: true,
-      maxFileSize: 2000 * 1024 * 1024,
-      maxFieldsSize: 100 * 1024 * 1024,
+      multiples: true, // Keep true as chapterFiles is multiple
+      maxFileSize: 2000 * 1024 * 1024, // 2GB
+      maxFieldsSize: 100 * 1024 * 1024, // 100MB for text fields
     });
 
     const formidableHeaders: { [key: string]: string } = {};
@@ -68,13 +66,13 @@ export async function POST(req: NextRequest) {
 
     return await new Promise<NextResponse>((resolveResponse, rejectResponseInternal) => {
       const cleanupAndReject = async (errorResponse: NextResponse) => {
-        if (tempUploadDirPath) {
+        if (tempUploadDirPath && await fs.pathExists(tempUploadDirPath)) {
           try { await fs.remove(tempUploadDirPath); console.log('Cleaned up Formidable upload directory on error:', tempUploadDirPath); }
           catch (e) { console.error("Error cleaning up Formidable upload directory during rejection:", e); }
         }
-        if (m4bOutputContainingDir) { // Changed from ffmpegProcessingDir
-           try { await fs.remove(m4bOutputContainingDir); console.log('Cleaned up M4B output directory on error:', m4bOutputContainingDir); } // Changed
-           catch (e) { console.error("Error cleaning up M4B output directory during rejection:", e); } // Changed
+        if (m4bOutputContainingDir && await fs.pathExists(m4bOutputContainingDir)) { 
+           try { await fs.remove(m4bOutputContainingDir); console.log('Cleaned up M4B output directory on error:', m4bOutputContainingDir); } 
+           catch (e) { console.error("Error cleaning up M4B output directory during rejection:", e); } 
         }
         rejectResponseInternal(errorResponse);
       };
@@ -86,7 +84,19 @@ export async function POST(req: NextRequest) {
           return;
         }
 
-        console.log('Formidable parsing complete. Fields:', Object.keys(fields), 'Files:', Object.keys(files));
+        console.log('Formidable parsing complete. Fields:', Object.keys(fields));
+        console.log('Parsed files from Formidable (field names):', Object.keys(files));
+        console.log('Detailed files from Formidable:', JSON.stringify(files, (key, value) => {
+            if (value && typeof value === 'object' && (value as FormidableFile).filepath) {
+                const f = value as FormidableFile;
+                return { originalFilename: f.originalFilename, newFilename: f.newFilename, filepath: 'PRESENT', size: f.size, mimetype: f.mimetype };
+            }
+            if (Array.isArray(value) && value.every(item => item && typeof item === 'object' && (item as FormidableFile).filepath)) {
+                return value.map(f => ({ originalFilename: f.originalFilename, newFilename: f.newFilename, filepath: 'PRESENT', size: f.size, mimetype: f.mimetype }));
+            }
+            return value;
+        }, 2));
+
 
         try {
             const bookTitle = getFirstField(fields.bookTitle as string | string[]);
@@ -128,7 +138,7 @@ export async function POST(req: NextRequest) {
                          return;
                     }
                 }
-            } else if (uploadedChapterFiles) { 
+            } else if (uploadedChapterFiles && (uploadedChapterFiles as FormidableFile).filepath) { 
                 const file = uploadedChapterFiles as FormidableFile;
                 if (parsedChapterMetadata.length !== 1) {
                     cleanupAndReject(NextResponse.json({ error: 'Received single chapter file but multiple metadata entries.' }, { status: 400 }));
@@ -145,7 +155,7 @@ export async function POST(req: NextRequest) {
                     return;
                 }
             } else { 
-                cleanupAndReject(NextResponse.json({ error: 'No chapter files uploaded.' }, { status: 400 }));
+                cleanupAndReject(NextResponse.json({ error: 'No chapter files uploaded or files are invalid.' }, { status: 400 }));
                 return;
             }
 
@@ -154,19 +164,23 @@ export async function POST(req: NextRequest) {
               return;
             }
             
-            const coverArtFile = files.coverArt ? (Array.isArray(files.coverArt) ? files.coverArt[0] : files.coverArt) : undefined;
+            const coverArtFormidableFile = files.coverArt ? (Array.isArray(files.coverArt) ? files.coverArt[0] : files.coverArt as FormidableFile) : undefined;
+            const coverArtPath = coverArtFormidableFile?.filepath;
+
 
             const audiobookMetadata: AudiobookMetadata = {
               bookTitle,
               author,
-              coverArtPath: coverArtFile?.filepath,
+              coverArtPath: coverArtPath,
               chapters: chapterFilesInput,
             };
             
-            console.log('Starting M4B conversion with metadata:', JSON.stringify(audiobookMetadata, (key, value) => key === 'chapters' ? value.map((c: ChapterInput) => ({...c, path: '...', originalName: c.originalName})) : value, 2));
+            console.log('Starting M4B conversion with metadata (coverArtPath included):', JSON.stringify(
+              { ...audiobookMetadata, coverArtPath: coverArtPath ? 'PRESENT' : 'ABSENT', chapters: audiobookMetadata.chapters.map(c => ({title: c.title, originalName: c.originalName, pathPresent: !!c.path})) }, null, 2)
+            );
             
             const m4bFilePath = await convertToM4B(audiobookMetadata);
-            m4bOutputContainingDir = path.dirname(m4bFilePath); // Capture the directory of the output M4B
+            m4bOutputContainingDir = path.dirname(m4bFilePath); 
             console.log('M4B file generated at:', m4bFilePath);
 
             const m4bFileName = path.basename(m4bFilePath);
@@ -174,47 +188,38 @@ export async function POST(req: NextRequest) {
             const m4bFileSize = stats.size;
 
             const responseHeaders = new Headers();
-            responseHeaders.set('Content-Type', 'audio/mp4a-latm'); // Standard M4B MIME type
+            responseHeaders.set('Content-Type', 'audio/mp4a-latm'); 
             responseHeaders.set('Content-Disposition', `attachment; filename="${encodeURIComponent(m4bFileName)}"`);
             responseHeaders.set('Content-Length', m4bFileSize.toString());
 
             const nodeFileStream = fs.createReadStream(m4bFilePath);
             
-            nodeFileStream.on('close', () => {
+            nodeFileStream.on('close', async () => {
               console.log('M4B file stream closed. Cleaning up M4B output directory:', m4bOutputContainingDir);
-              if (m4bOutputContainingDir) {
+              if (m4bOutputContainingDir && await fs.pathExists(m4bOutputContainingDir)) {
                 fs.remove(m4bOutputContainingDir)
                   .then(() => console.log('Successfully cleaned up M4B output directory after streaming.'))
                   .catch(e => console.error("Error cleaning up M4B output directory after streaming:", e));
               }
             });
 
-            nodeFileStream.on('error', (streamError) => {
+            nodeFileStream.on('error', async (streamError) => {
                 console.error('Error during M4B file streaming:', streamError);
-                // Attempt cleanup even on stream error
-                if (m4bOutputContainingDir) {
+                if (m4bOutputContainingDir && await fs.pathExists(m4bOutputContainingDir)) {
                     fs.remove(m4bOutputContainingDir)
                       .then(() => console.log('Successfully cleaned up M4B output directory after stream error.'))
                       .catch(e => console.error("Error cleaning up M4B output directory after stream error:", e));
                 }
-                // Note: We can't reject the main promise here as it might have already resolved.
-                // The client will experience a broken download.
             });
             
             const webStream = Readable.toWeb(nodeFileStream);
-
             resolveResponse(new NextResponse(webStream, { status: 200, headers: responseHeaders }));
             
-            // tempUploadDirPath (Formidable's upload dir) is cleaned up in the finally block below.
-            // m4bOutputContainingDir is cleaned up by the stream's 'close' or 'error' event.
-
           } catch (processingError) {
             console.error('Error during M4B conversion processing:', processingError);
             const errorMessage = processingError instanceof Error ? processingError.message : 'An unknown error occurred during conversion.';
             cleanupAndReject(NextResponse.json({ error: errorMessage, details: String(processingError) }, { status: 500 }));
           } finally {
-             // This finally block is for the try...catch within form.parse callback
-             // It ensures Formidable's upload directory is cleaned up.
              if (tempUploadDirPath && await fs.pathExists(tempUploadDirPath)) { 
                 fs.remove(tempUploadDirPath)
                 .then(() => console.log('Cleaned up Formidable upload directory (form.parse finally):', tempUploadDirPath))
@@ -242,17 +247,15 @@ export async function POST(req: NextRequest) {
         }
     } else if (error instanceof Error) {
         responseError = error.message; 
-        responseDetails = String(error); // Keep it simple
+        responseDetails = String(error); 
     } else {
         responseDetails = String(error);
     }
     
-    // Cleanup Formidable's temp upload dir if it exists and an outer error occurred
     if (tempUploadDirPath && await fs.pathExists(tempUploadDirPath)) {
       try { await fs.remove(tempUploadDirPath); console.log('Cleaned up Formidable upload directory (outer catch):', tempUploadDirPath); }
       catch (e) { console.error("Error cleaning up Formidable upload directory (outer catch):", e); }
     }
-    // Cleanup M4B output dir if it exists and an outer error occurred
     if (m4bOutputContainingDir && await fs.pathExists(m4bOutputContainingDir)) {
       try { await fs.remove(m4bOutputContainingDir); console.log('Cleaned up M4B output directory (outer catch):', m4bOutputContainingDir); }
       catch (e) { console.error("Error cleaning up M4B output directory (outer catch):", e); }
@@ -261,4 +264,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: responseError, details: responseDetails }, { status: responseStatus });
   } 
 }
-    

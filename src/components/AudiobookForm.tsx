@@ -80,7 +80,9 @@ export default function AudiobookForm() {
   useEffect(() => {
     if (isConverting) {
       if (conversionProgress === 0) setConversionStageMessage('Initializing conversion...');
-      else if (conversionProgress > 0 && conversionProgress <= 20) setConversionStageMessage('Preparing chapter data...');
+      else if (conversionProgress > 0 && conversionProgress <= 5) setConversionStageMessage('Uploading files...');
+      else if (conversionProgress > 5 && conversionProgress <= 10) setConversionStageMessage('Server is preparing...');
+      else if (conversionProgress > 10 && conversionProgress <= 20) setConversionStageMessage('Preparing chapter data...');
       else if (conversionProgress > 20 && conversionProgress <= 70) setConversionStageMessage('Converting audio (this may take a while)...');
       else if (conversionProgress > 70 && conversionProgress <= 95) setConversionStageMessage('Embedding metadata & cover art...');
       else if (conversionProgress > 95 && conversionProgress < 100) setConversionStageMessage('Finalizing M4B file...');
@@ -90,43 +92,39 @@ export default function AudiobookForm() {
   const onSubmit = async (data: AudiobookFormValues) => {
     setIsConverting(true);
     setM4bDownload(null);
-    setConversionProgress(0); // Initial progress
+    setConversionProgress(0); 
     setConversionStageMessage('Starting upload...');
 
-
-    // Progress simulation
     let progressInterval: NodeJS.Timeout | null = null;
-    
-    // Simulate initial upload and server prep phase (client-side)
-    // We'll run this until the actual fetch starts, then rely on a longer, slower interval for conversion
     let initialProgress = 0;
     const initialInterval = setInterval(() => {
-      initialProgress += 5; // Faster initial progress
-      if (initialProgress <= 10) { // e.g. "uploading" and "server preparing"
+      initialProgress += 5; 
+      if (initialProgress <= 10) { 
         setConversionProgress(initialProgress);
-         if(initialProgress <=5) setConversionStageMessage('Uploading files...');
-         else setConversionStageMessage('Server is preparing...');
       } else {
         clearInterval(initialInterval);
-        // Now start a slower interval for the main conversion simulation
         let mainConversionSimulatedProgress = initialProgress;
         progressInterval = setInterval(() => {
-          mainConversionSimulatedProgress += 2; // Slower progress for conversion
-          if (mainConversionSimulatedProgress <= 95) { // Simulate up to 95% for conversion phase
+          mainConversionSimulatedProgress += 2; 
+          if (mainConversionSimulatedProgress <= 95) { 
             setConversionProgress(mainConversionSimulatedProgress);
           } else {
-             if(progressInterval) clearInterval(progressInterval); // Stop at 95%, server response will take it to 100%
+             if(progressInterval) clearInterval(progressInterval); 
           }
-        }, 800); // Slower interval
+        }, 800); 
       }
     }, 200);
-
 
     const formDataToSubmit = new FormData();
     formDataToSubmit.append('bookTitle', data.bookTitle);
     formDataToSubmit.append('author', data.author);
-    if (data.coverArt?.[0]) {
-      formDataToSubmit.append('coverArt', data.coverArt[0], data.coverArt[0].name);
+    
+    // data.coverArt is File | undefined due to Zod transform
+    if (data.coverArt) {
+      console.log('Appending coverArt to FormData:', data.coverArt); // Client-side log
+      formDataToSubmit.append('coverArt', data.coverArt, data.coverArt.name);
+    } else {
+      console.log('No coverArt to append to FormData.'); // Client-side log
     }
 
     const chapterMetadata = data.chapters.map(c => ({
@@ -145,8 +143,8 @@ export default function AudiobookForm() {
         body: formDataToSubmit,
       });
 
-      if(initialInterval) clearInterval(initialInterval); // Clear initial if it was somehow still running
-      if(progressInterval) clearInterval(progressInterval); // Clear main simulation interval
+      if(initialInterval) clearInterval(initialInterval);
+      if(progressInterval) clearInterval(progressInterval);
 
       if (response.ok) {
         setConversionProgress(100);
@@ -167,7 +165,7 @@ export default function AudiobookForm() {
           description: "Your M4B audiobook is ready for download.",
         });
       } else {
-        setConversionProgress(0); // Reset on error
+        setConversionProgress(0); 
         const errorData = await response.json();
         setConversionStageMessage(`Conversion Failed: ${errorData.error || 'Unknown server error'}`);
         toast({
@@ -191,8 +189,6 @@ export default function AudiobookForm() {
       console.error("Form submission error:", error);
     } finally {
       setIsConverting(false);
-      // Don't reset progress to 0 here if successful, let it stay at 100%
-      // If error, it's already set to 0 or an error message state
     }
   };
   
@@ -237,7 +233,7 @@ export default function AudiobookForm() {
             {form.formState.errors.coverArt && <p className="text-sm text-destructive">{form.formState.errors.coverArt.message as string}</p>}
             {coverArtPreview && (
               <div className="mt-4">
-                <Image src={coverArtPreview} alt="Cover art preview" width={200} height={200} className="rounded-lg border-2 border-muted shadow-md object-cover" data-ai-hint="book cover" />
+                <Image src={coverArtPreview} alt="Cover art preview" width={200} height={200} className="rounded-lg border-2 border-muted shadow-md object-cover" data-ai-hint="book cover"/>
               </div>
             )}
           </div>
@@ -302,7 +298,7 @@ export default function AudiobookForm() {
           </CardTitle>
         </CardHeader>
         <CardContent className="p-6">
-          {(isConverting || m4bDownload || conversionProgress > 0 ) && ( // Show progress area if converting OR download is ready OR an error occurred (progress might be 0 but stage message set)
+          {(isConverting || m4bDownload || conversionProgress > 0 ) && ( 
             <div className="space-y-3 my-4">
               <p className="font-semibold text-lg text-center">{conversionStageMessage}</p>
               <Progress value={conversionProgress} className="w-full h-3 rounded-full [&>div]:bg-accent" />
