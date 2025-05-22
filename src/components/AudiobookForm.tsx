@@ -3,17 +3,14 @@
 
 import { useState, useEffect } from 'react';
 import Image from 'next/image';
-import { useForm, useFieldArray, Controller } from 'react-hook-form';
+import { useForm, useFieldArray } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import type { z } from 'zod';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { useToast } from '@/hooks/use-toast';
-import { convertToM4BAction } from '@/app/actions';
 import type { ChapterClient } from '@/lib/types';
 import { audiobookFormSchema, type AudiobookFormValues } from '@/lib/validation';
 import { UploadCloud, DownloadCloud, Trash2, Loader2, FileAudio, BookOpen } from 'lucide-react';
@@ -38,7 +35,7 @@ export default function AudiobookForm() {
   const { fields, append, remove } = useFieldArray({
     control: form.control,
     name: "chapters",
-    keyName: "customId",
+    keyName: "customId", // Keep this if you rely on it, otherwise 'id' is default
   });
 
   const handleCoverArtChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -58,7 +55,7 @@ export default function AudiobookForm() {
 
   const getFileNameWithoutExtension = (fileName: string) => {
     const lastDotIndex = fileName.lastIndexOf('.');
-    if (lastDotIndex === -1) return fileName; // No extension found
+    if (lastDotIndex === -1) return fileName;
     return fileName.substring(0, lastDotIndex);
   };
 
@@ -66,14 +63,16 @@ export default function AudiobookForm() {
     const files = event.target.files;
     if (files) {
       const newChapters = Array.from(files).map(file => ({
-        id: crypto.randomUUID(),
+        id: crypto.randomUUID(), // Ensure unique ID for react key
         file: file,
         name: file.name,
-        title: getFileNameWithoutExtension(file.name), // Prefill title
-      } as ChapterClient ));
+        title: getFileNameWithoutExtension(file.name),
+      } as ChapterClient )); // Make sure ChapterClient includes 'id'
       
-      // Clear existing fields before appending new ones to avoid duplicates if user selects files multiple times
-      fields.forEach((_, index) => remove(index)); 
+      // Clear existing fields before appending to avoid issues if user selects files multiple times
+      while(fields.length > 0) {
+        remove(0);
+      }
       newChapters.forEach(chapter => append(chapter));
     }
   };
@@ -83,47 +82,92 @@ export default function AudiobookForm() {
     setM4bDownload(null);
     setConversionProgress(0);
 
+    // Progress simulation
     let progress = 0;
     const interval = setInterval(() => {
       progress += 10;
-      if (progress <= 100) {
+      if (progress <= 90) { // Simulate up to 90%, actual completion will set to 100
         setConversionProgress(progress);
       } else {
-        clearInterval(interval);
+        // Don't clear interval here, wait for actual response
       }
     }, 300);
-
 
     const formDataToSubmit = new FormData();
     formDataToSubmit.append('bookTitle', data.bookTitle);
     formDataToSubmit.append('author', data.author);
     if (data.coverArt?.[0]) {
-      formDataToSubmit.append('coverArt', data.coverArt[0]);
+      formDataToSubmit.append('coverArt', data.coverArt[0], data.coverArt[0].name);
     }
-    formDataToSubmit.append('chapters', JSON.stringify(data.chapters.map(c => ({ name: c.name, title: c.title }))));
+
+    const chapterMetadata = data.chapters.map(c => ({
+      originalName: c.name,
+      title: c.title,
+    }));
+    formDataToSubmit.append('chapterMetadataJson', JSON.stringify(chapterMetadata));
+
+    data.chapters.forEach((chapter) => {
+      formDataToSubmit.append('chapterFiles', chapter.file, chapter.file.name);
+    });
     
-
-    const response = await convertToM4BAction(formDataToSubmit);
-    clearInterval(interval); 
-    setConversionProgress(100);
-
-
-    if (response.success && response.data?.downloadUrl) {
-      setM4bDownload({ url: response.data.downloadUrl, fileName: response.data.fileName });
-      toast({
-        title: "Conversion Successful!",
-        description: "Your M4B audiobook is ready for download.",
+    try {
+      const response = await fetch('/api/convert', {
+        method: 'POST',
+        body: formDataToSubmit,
       });
-    } else {
+
+      clearInterval(interval);
+      setConversionProgress(100);
+
+      if (response.ok) {
+        const blob = await response.blob();
+        const contentDisposition = response.headers.get('content-disposition');
+        let fileName = "audiobook.m4b"; // Default filename
+        if (contentDisposition) {
+          const fileNameMatch = contentDisposition.match(/filename="?(.+)"?/i);
+          if (fileNameMatch && fileNameMatch.length > 1) {
+            fileName = fileNameMatch[1];
+          }
+        }
+        const url = window.URL.createObjectURL(blob);
+        setM4bDownload({ url: url, fileName: fileName });
+        toast({
+          title: "Conversion Successful!",
+          description: "Your M4B audiobook is ready for download.",
+        });
+      } else {
+        const errorData = await response.json();
+        toast({
+          variant: "destructive",
+          title: "Conversion Failed",
+          description: errorData.error || "An error occurred during M4B conversion.",
+        });
+         console.error("Conversion failed with data:", errorData);
+      }
+    } catch (error) {
+      clearInterval(interval);
+      setConversionProgress(0); // Reset progress on network or other client-side error
       toast({
         variant: "destructive",
-        title: "Conversion Failed",
-        description: response.error?.toString() || "An error occurred during M4B conversion.",
+        title: "Conversion Error",
+        description: error instanceof Error ? error.message : "An unexpected error occurred.",
       });
+      console.error("Form submission error:", error);
+    } finally {
+      setIsConverting(false);
     }
-    setIsConverting(false);
   };
   
+  // Clean up blob URL when component unmounts or download URL changes
+  useEffect(() => {
+    const currentUrl = m4bDownload?.url;
+    return () => {
+      if (currentUrl) {
+        window.URL.revokeObjectURL(currentUrl);
+      }
+    };
+  }, [m4bDownload?.url]);
+
   return (
     <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-8">
       <Card className="shadow-lg">
@@ -145,7 +189,7 @@ export default function AudiobookForm() {
             {form.formState.errors.author && <p className="text-sm text-destructive">{form.formState.errors.author.message}</p>}
           </div>
           <div className="space-y-2">
-            <Label htmlFor="coverArt" className="text-lg">Cover Art</Label>
+            <Label htmlFor="coverArt" className="text-lg">Cover Art (Optional)</Label>
             <Input
               id="coverArt"
               type="file"
@@ -168,16 +212,16 @@ export default function AudiobookForm() {
           <CardTitle className="text-3xl flex items-center gap-2">
             <FileAudio className="h-8 w-8 text-primary" /> Chapters
           </CardTitle>
-          <CardDescription>Upload your audio files. Each file will be treated as a chapter.</CardDescription>
+          <CardDescription>Upload your audio files. Each file will be treated as a chapter. Ensure files are in the desired chapter order.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           <div>
-            <Label htmlFor="audioFiles" className="text-lg">Audio Files</Label>
+            <Label htmlFor="audioFiles" className="text-lg">Audio Files (MP3, WAV, M4A, OGG, etc.)</Label>
             <Input
               id="audioFiles"
               type="file"
               multiple
-              accept="audio/mpeg,audio/wav,audio/mp3,audio/m4a,audio/mp4"
+              accept="audio/*" // More generic audio/* but can be specific like audio/mpeg,audio/wav,audio/mp4
               onChange={handleAudioFilesChange}
               className="text-base"
             />
@@ -221,7 +265,7 @@ export default function AudiobookForm() {
         <CardContent>
           {isConverting && (
             <div className="space-y-2">
-              <p>Converting your audiobook... Please wait.</p>
+              <p>Converting your audiobook... This may take a few minutes.</p>
               <Progress value={conversionProgress} className="w-full" />
             </div>
           )}
@@ -231,23 +275,16 @@ export default function AudiobookForm() {
               <a
                 href={m4bDownload.url} 
                 download={m4bDownload.fileName}
-                onClick={(e) => {
-                  if (m4bDownload.url.startsWith('/placeholder-audiobooks/')) {
-                    e.preventDefault();
-                    toast({ title: "Download Simulated", description: `This is a placeholder. In a real app, ${m4bDownload.fileName} would download.`});
-                  }
-                }}
               >
-                <Button variant="default" className="bg-accent hover:bg-accent/90 text-accent-foreground w-full text-lg py-6">
-                  <DownloadCloud className="mr-2 h-5 w-5" /> Download M4B File
+                <Button type="button" variant="default" className="bg-accent hover:bg-accent/90 text-accent-foreground w-full text-lg py-6">
+                  <DownloadCloud className="mr-2 h-5 w-5" /> Download M4B File ({m4bDownload.fileName})
                 </Button>
               </a>
-              <p className="text-xs text-muted-foreground text-center">Note: This is a simulated download. File: {m4bDownload.fileName}</p>
             </div>
           )}
         </CardContent>
         <CardFooter>
-          <Button type="submit" disabled={isConverting} className="w-full text-lg py-6">
+          <Button type="submit" disabled={isConverting || !fields.length} className="w-full text-lg py-6">
             {isConverting ? (
               <Loader2 className="mr-2 h-5 w-5 animate-spin" />
             ) : (
