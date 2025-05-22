@@ -67,8 +67,11 @@ async function createChapterMetadataFile(
 
 export async function convertToM4B(metadata: AudiobookMetadata): Promise<string> {
   return new Promise<string>(async (resolve, reject) => {
-    const tempProcessingDir = tmp.dirSync({ unsafeCleanup: true }).name;
-    const outputFileName = `${metadata.bookTitle.replace(/\s+/g, '_')}_Audiobook.m4b`;
+    const tempProcessingDirObj = tmp.dirSync({ unsafeCleanup: true });
+    const tempProcessingDir = tempProcessingDirObj.name;
+    console.log('Created temp processing directory for ffmpeg:', tempProcessingDir);
+
+    const outputFileName = `${metadata.bookTitle.replace(/[\s:]+/g, '_')}_Audiobook.m4b`;
     const outputM4BPath = path.join(tempProcessingDir, outputFileName);
 
     let tempCoverPath: string | undefined;
@@ -99,13 +102,12 @@ export async function convertToM4B(metadata: AudiobookMetadata): Promise<string>
           author: metadata.author,
           chapters: metadata.chapters,
         },
-        tempProcessingDir
+        tempProcessingDir 
       );
       command.input(ffmpegMetadataFilePath);
       const metadataFileInputIndex = audioInputsCount + (tempCoverPath ? 1 : 0);
 
       // 4. Build complex filter for audio concatenation
-      // Example: [0:a][1:a]...[N-1:a]concat=n=N:v=0:a=1[a_out]
       const audioConcatFilter = metadata.chapters
         .map((_, index) => `[${index}:a]`)
         .join('') + `concat=n=${audioInputsCount}:v=0:a=1[a_out]`;
@@ -121,43 +123,50 @@ export async function convertToM4B(metadata: AudiobookMetadata): Promise<string>
 
       if (tempCoverPath && coverArtInputIndex !== -1) {
         outputOptions.push(
-          '-map', `${coverArtInputIndex}:v?`, // Map video stream from cover art input (if it exists)
-          '-c:v', 'copy',                   // Copy the cover art stream (assumes it's JPEG/PNG)
-                                            // For broader compatibility, -c:v mjpeg might be needed if 'copy' fails
+          '-map', `${coverArtInputIndex}:v?`, 
+          '-c:v', 'copy',                   
           '-disposition:v', 'attached_pic'
         );
       }
       
-      // Map metadata from the FFMETADATA file input
-      // The index for map_metadata should be the input file index of the metadata file.
       outputOptions.push(`-map_metadata`, `${metadataFileInputIndex}`);
-
       command.outputOptions(outputOptions);
-      command.output(outputM4BPath); // Specify the output file
+      command.output(outputM4BPath);
 
       command
         .on('start', (commandLine) => {
           console.log('Spawned Ffmpeg with command: ' + commandLine);
         })
         .on('progress', (progress) => {
-          if (progress.percent) {
-            console.log(`Processing: ${progress.percent}% done`);
-          }
+          // Removed console.log for ffmpeg progress percentage
+          // if (progress.percent) {
+          //   console.log(`Processing: ${progress.percent}% done`);
+          // }
         })
         .on('error', (err, stdout, stderr) => {
           console.error('ffmpeg stdout:', stdout);
           console.error('ffmpeg stderr:', stderr);
+          if (tempProcessingDir) { // Ensure cleanup on error
+            fs.remove(tempProcessingDir)
+              .then(() => console.log('Cleaned up ffmpeg processing directory on error:', tempProcessingDir))
+              .catch(e => console.error("Error cleaning up ffmpeg processing directory during error handling:", e));
+          }
           reject(new Error(`ffmpeg error: ${err.message}`));
         })
         .on('end', (stdout, stderr) => {
           console.log('ffmpeg conversion finished successfully.');
-          console.log('ffmpeg stdout (end):', stdout);
-          console.log('ffmpeg stderr (end):', stderr);
+          // console.log('ffmpeg stdout (end):', stdout); // Can be verbose
+          // console.log('ffmpeg stderr (end):', stderr); // Can be verbose
           resolve(outputM4BPath); 
         })
-        .run(); // Execute the command
+        .run();
 
     } catch (error) {
+      if (tempProcessingDir) { // Ensure cleanup on outer catch
+        fs.remove(tempProcessingDir)
+          .then(() => console.log('Cleaned up ffmpeg processing directory on outer catch:', tempProcessingDir))
+          .catch(e => console.error("Error cleaning up ffmpeg processing directory during outer catch:", e));
+      }
       reject(error);
     }
   });
